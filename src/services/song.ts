@@ -21,21 +21,26 @@ export type Sample = {
   submitterSampleId: string;
 };
 
+export type SampleCollection = {
+  fasta_header_name: string;
+};
+
 export type LineageAnalysis = {
-  lineage_name: string;
+  lineage_analysis_software_data_version: string;
   lineage_analysis_software_name: string;
   lineage_analysis_software_version: string;
-  lineage_analysis_software_data_version: string;
+  lineage_name: string;
   scorpio_call: string;
   scorpio_version: string;
 };
 
 export type Analysis = {
   analysisId: string;
-  studyId: string;
   analysisType?: AnalysisType;
-  samples?: Array<Sample>;
   lineage_analysis?: LineageAnalysis;
+  sample_collection?: SampleCollection;
+  samples?: Array<Sample>;
+  studyId: string;
 };
 
 export let analysis_patch_success: number = 0;
@@ -52,6 +57,16 @@ axiosRetry(axios, {
     err.code === 'ECONNABORTED' || axiosRetry.isNetworkOrIdempotentRequestError(err),
 });
 
+export async function getLatestAnalysisTypeVersion(typeName: string): Promise<number> {
+  const fullUrl = urlJoin(config.song.endpoint, `/schemas?name=${typeName}&hideSnapshot=true`);
+  const resp = await axios.get<{ resultSet: Array<{ version: number }> }>(fullUrl, {
+    timeout: config.server.apiTimeout,
+  });
+  const versions = resp.data.resultSet.map((s) => s.version);
+  if (versions.length === 0) throw new Error(`No schema found in SONG for analysisType '${typeName}'`);
+  return Math.max(...versions);
+}
+
 export function getAllStudies(): Promise<string[]> {
   return new Promise<string[]>((resolve, reject) => {
     const fullUrl = urlJoin(config.song.endpoint, '/studies/all');
@@ -61,7 +76,7 @@ export function getAllStudies(): Promise<string[]> {
         logger.info(`found ${resp.data?.length} studies`);
         resolve(resp.data);
       })
-      .catch((err) => reject(new Error(`SONG API ${fullUrl} error:${err}`)));
+      .catch((err) => reject(new Error(`SONG API ${fullUrl} error: ${err instanceof Error ? err.message : String(err)}`)));
   });
 }
 
@@ -87,7 +102,7 @@ export function getAnalysisByStudyPaginated(
       .then((resp) => {
         resolve(resp.data);
       })
-      .catch((err) => reject(new Error(`SONG API ${fullUrl} error:${err}`)));
+      .catch((err) => reject(new Error(`SONG API ${fullUrl} error: ${err instanceof Error ? err.message : String(err)}`)));
   });
 }
 
@@ -112,9 +127,19 @@ export function patchAnalysis(studyId: string, analysisId: string, data: any): P
         resolve('OK');
       })
       .catch((err) => {
+        const body = err?.response?.data;
+        const detail = body?.errorId ? `${body.errorId}: ${body.message}` : undefined;
+
+        if (body?.errorId === 'analysis.type.incorrect.version') {
+          logger.debug(`Skipping ${analysisId}: schema not at latest version — ${body.message}`);
+          resolve('SKIP');
+          return;
+        }
+
         analysis_patch_failed++;
-        logger.error(`SONG API ${fullUrl} error:${err}`);
-        reject(new Error(`SONG API ${fullUrl} error:${err}`));
+        const msg = `SONG API ${fullUrl} error: ${err instanceof Error ? err.message : String(err)}${detail ? ` — ${detail}` : ''}`;
+        logger.error(msg);
+        reject(new Error(msg));
       });
   });
 }

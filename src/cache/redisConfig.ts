@@ -47,7 +47,13 @@ const isCluster = multipleHosts || hosts[0].host.includes('cluster');
 const client: RedisClient = isCluster ? createCluster({ rootNodes: hostConfigs }) : createClient(hostConfigs[0]);
 
 client.on('error', (err) => {
-	throw new Error(`Redis Client Error: ${err}`);
+	const detail =
+		err instanceof AggregateError
+			? err.errors.map((e: unknown) => (e instanceof Error ? e.message : String(e))).join('; ')
+			: err instanceof Error
+				? err.message
+				: String(err);
+	throw new Error(`Redis Client Error: ${detail}`);
 });
 
 const isSingleClientOpen = (redisClient: RedisClient): boolean => {
@@ -80,12 +86,20 @@ export const disconnectRedis = async (): Promise<void> => {
 	await client.close();
 };
 
-export type keyFormat = `${string}:${string}`;
+export type keyFormat = string;
 
 export const saveHash = async (key: keyFormat, value: Record<string, string | number>) => {
 	return await client.hSet(key, [...Object.entries(value).flat()]);
 };
 
+export const existsKey = async (key: keyFormat): Promise<boolean> => {
+	return (await client.exists(key)) > 0;
+};
+
 export const getHash = async (key: keyFormat) => {
 	return await client.hGetAll(key);
+};
+
+export const getKeyCount = async (): Promise<number> => {
+	return await client.dbSize();
 };

@@ -1,33 +1,84 @@
 import logger from '@/utils/logger';
+import { config } from '@/config';
 import { Analysis, getAllStudies, getAnalysisByStudyPaginated } from '@/services/song';
 
-import { connectRedis, saveHash, getHash, keyFormat } from './redisConfig';
+import { connectRedis, existsKey, saveHash, getHash, getKeyCount, keyFormat } from './redisConfig';
+
+const CACHE_FILL_MARKER_KEY = 'pedigree:cache:fill';
 
 export type CacheData = {
   analysisId: string;
-  analysisTypeVersion: number;
-  lineageName: string;
+  lineageAnalysisSoftwareDataVersion: string;
   lineageAnalysisSoftwareName: string;
   lineageAnalysisSoftwareVersion: string;
-  lineageAnalysisSoftwareDataVersion: string;
+  lineageName: string;
   scorpioCall: string;
   scorpioVersion: string;
+  studyId: string;
 };
 
-export const startLoadCachePipeline = function (): Promise<void> {
-  return new Promise<void>(async (resolve, reject) => {
-    connectRedis() // verify redis connection at start
-      .then(getAllStudies)
-      .then(async (studies) => {
-        for (const [index, study] of studies.entries()) {
-          logger.info(`Fetching ${index + 1}/${studies.length} studyId: ${study}`);
-          await getAndCacheAnalysisByStudy(study);
-        }
-        resolve();
-      })
-      .catch(reject);
-  });
-};
+export async function startLoadCachePipeline(): Promise<void> {
+  await connectRedis();
+  if (await isCacheFresh()) {
+    logger.info('Cache is fresh — skipping refill. Set CACHE_MAX_AGE_MINUTES=0 to force.');
+    return;
+  }
+  const studies = await getAllStudies();
+  for (const [index, study] of studies.entries()) {
+    logger.info(`Fetching ${index + 1}/${studies.length} studyId: ${study}`);
+    await getAndCacheAnalysisByStudy(study);
+  }
+  await markCacheFilled();
+}
+
+export async function adoptCacheIfNeeded(): Promise<void> {
+  if (!config.cache.maxAgeMinutes) return;
+
+  await connectRedis();
+  const marker = await getHash(CACHE_FILL_MARKER_KEY);
+  if (marker?.updatedAt) return;
+
+  const keyCount = await getKeyCount();
+  if (keyCount === 0) {
+    logger.info('Cache is empty — skipping adoption');
+    return;
+  }
+
+  const studies = await getAllStudies();
+  let songTotal = 0;
+  for (const study of studies) {
+    const resp = await getAnalysisByStudyPaginated(study, 1, 0);
+    songTotal += resp.totalAnalyses;
+  }
+
+  logger.info(`Cache adoption: Redis has ${keyCount} keys, SONG has ${songTotal} published analyses`);
+
+  if (keyCount < songTotal) {
+    logger.warn(
+      `Redis key count (${keyCount}) is less than SONG total (${songTotal}) — cache may be incomplete (analyses without fasta_header_name are excluded by design)`,
+    );
+  }
+
+  await markCacheFilled();
+  logger.info('Cache freshness marker stamped');
+}
+
+async function isCacheFresh(): Promise<boolean> {
+  const maxAge = config.cache.maxAgeMinutes;
+  if (!maxAge) return false;
+
+  const marker = await getHash(CACHE_FILL_MARKER_KEY);
+  if (!marker?.updatedAt) return false;
+
+  const ageMinutes = (Date.now() - Number(marker.updatedAt)) / 1000 / 60;
+  logger.debug(`Cache age: ${Math.round(ageMinutes)} min (max: ${maxAge} min)`);
+  return ageMinutes < maxAge;
+}
+
+async function markCacheFilled(): Promise<void> {
+  await saveHash(CACHE_FILL_MARKER_KEY, { updatedAt: Date.now() });
+  logger.debug(`Cache fill marker written`);
+}
 
 function getAndCacheAnalysisByStudy(studyId: string): Promise<string> {
   return new Promise(async (resolve, reject) => {
@@ -49,7 +100,7 @@ function getAndCacheAnalysisByStudy(studyId: string): Promise<string> {
             }%`,
           );
         } catch (error) {
-          logger.error(`Cashing Error on saveCacheAnalysis: ${error}`);
+          logger.error(`Caching error on saveCacheAnalysis: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
     }
@@ -65,26 +116,27 @@ function saveCacheAnalysis(analysisList: Array<Analysis>): Promise<void> {
         logger.debug(`saveCacheAnalysis - caching ${analysisList?.length} analysis`);
 
         for (const analysis of analysisList) {
-          if (analysis.samples?.at(0)?.submitterSampleId != null) {
-            const hsetData: CacheData = {
-              analysisId: analysis.analysisId || '',
-              analysisTypeVersion: analysis.analysisType?.version || 0,
-              lineageName: analysis.lineage_analysis?.lineage_name || '',
-              lineageAnalysisSoftwareName:
-                analysis.lineage_analysis?.lineage_analysis_software_name || '',
-              lineageAnalysisSoftwareVersion:
-                analysis.lineage_analysis?.lineage_analysis_software_version || '',
-              lineageAnalysisSoftwareDataVersion:
-                analysis.lineage_analysis?.lineage_analysis_software_data_version || '',
-              scorpioCall: analysis.lineage_analysis?.scorpio_call || '',
-              scorpioVersion: analysis.lineage_analysis?.scorpio_version || '',
-            };
+          const fastaHeaderName = analysis.sample_collection?.fasta_header_name;
+          if (!fastaHeaderName) continue;
 
-            await saveHash(
-              hashKeyFormatter(analysis.studyId, analysis.samples.at(0)?.submitterSampleId!),
-              hsetData,
-            );
-          }
+          const key = cacheKey(fastaHeaderName);
+          if (await existsKey(key)) continue;
+
+          const hsetData: CacheData = {
+            analysisId: analysis.analysisId || '',
+            lineageAnalysisSoftwareDataVersion:
+              analysis.lineage_analysis?.lineage_analysis_software_data_version || '',
+            lineageAnalysisSoftwareName:
+              analysis.lineage_analysis?.lineage_analysis_software_name || '',
+            lineageAnalysisSoftwareVersion:
+              analysis.lineage_analysis?.lineage_analysis_software_version || '',
+            lineageName: analysis.lineage_analysis?.lineage_name || '',
+            scorpioCall: analysis.lineage_analysis?.scorpio_call || '',
+            scorpioVersion: analysis.lineage_analysis?.scorpio_version || '',
+            studyId: analysis.studyId || '',
+          };
+
+          await saveHash(key, hsetData);
         }
         resolve();
       })
@@ -107,20 +159,18 @@ export const getCacheByKey = (key: keyFormat): Promise<CacheData> => {
 };
 
 function toCacheData(data: any): CacheData {
-  let cacheData: CacheData = {
+  return {
     analysisId: data['analysisId'],
-    analysisTypeVersion: data['analysisTypeVersion'],
-    lineageName: data['lineageName'],
+    lineageAnalysisSoftwareDataVersion: data['lineageAnalysisSoftwareDataVersion'],
     lineageAnalysisSoftwareName: data['lineageAnalysisSoftwareName'],
     lineageAnalysisSoftwareVersion: data['lineageAnalysisSoftwareVersion'],
-    lineageAnalysisSoftwareDataVersion: data['lineageAnalysisSoftwareDataVersion'],
+    lineageName: data['lineageName'],
     scorpioCall: data['scorpioCall'],
     scorpioVersion: data['scorpioVersion'],
+    studyId: data['studyId'],
   };
-
-  return cacheData;
 }
 
-export function hashKeyFormatter(studyId: string, submitterSampleId: string): keyFormat {
-  return `${studyId}:${submitterSampleId}`;
+export function cacheKey(fastaHeaderName: string): keyFormat {
+  return fastaHeaderName.toLowerCase();
 }

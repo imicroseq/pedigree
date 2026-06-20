@@ -5,9 +5,13 @@
 	"main": "index.js",
 	"scripts": {
 		"build": "tspc",
+		"clear:dist": "rm -rf dist/",
+		"clear:nodeModules": "find . -name 'node_modules' -type d -prune -exec rm -rf '{}' +",
 		"dev": "ts-node ./src/index.ts",
 		"dev:updateAnalysis": "ts-node ./src/index.ts --profile=updateAnalysis",
 		"dev:updateCache": "ts-node ./src/index.ts --profile=updateCache",
+		"prebuild": "npm run clear:dist",
+		"reset": "npm run clear:nodeModules && npm run clear:dist && npm install",
 		"start": "TS_NODE_BASEURL=./dist node -r tsconfig-paths/register ./dist/index.js",
 		"start:updateAnalysis": "TS_NODE_BASEURL=./dist node -r tsconfig-paths/register ./dist/index.js --profile=updateAnalysis",
 		"start:updateCache": "TS_NODE_BASEURL=./dist node -r tsconfig-paths/register ./dist/index.js --profile=updateCache",
