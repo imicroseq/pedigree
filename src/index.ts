@@ -6,9 +6,10 @@ import minimist from 'minimist';
 import _ from 'lodash';
 
 import logger from '@/utils/logger';
-import { adoptCacheIfNeeded, startLoadCachePipeline } from '@/cache';
+import { startLoadCachePipeline } from '@/cache';
 import { disconnectRedis } from '@/cache/redisConfig';
 import { startUpdateAnalysisPipeline } from '@/services/index';
+import { validateLineageFile } from '@/services/fileSource';
 import { sendSlackNotification, NOTIFICATION_CATEGORY_ICON } from '@/utils/slackNotifications';
 import { todaysDateTimezoned, msToTimeFormat } from '@/utils/dates';
 import { analysis_patch_failed, analysis_patch_success } from '@/services/song';
@@ -34,17 +35,16 @@ async function runScript(args: any) {
 	try {
 		switch (profile) {
 			case Profiles.UPDATECACHE:
-				// this profile will save in cache all current analysis
+				await validateLineageFile();
 				await startLoadCachePipeline();
 				break;
 			case Profiles.UPDATEANALYSIS:
-				await adoptCacheIfNeeded();
 				await startUpdateAnalysisPipeline();
 				break;
-
 			default:
-				// this profile will start updating cache to then proceed to update analysis data
-				await startLoadCachePipeline().then(startUpdateAnalysisPipeline);
+				await validateLineageFile();
+				await startLoadCachePipeline();
+				await startUpdateAnalysisPipeline();
 				break;
 		}
 		logger.info(`Script completed successfully`);

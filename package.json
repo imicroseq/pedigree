@@ -1,6 +1,6 @@
 {
 	"name": "pedigree",
-	"version": "1.0.3",
+	"version": "0.0.0-dev",
 	"description": "",
 	"main": "index.js",
 	"scripts": {
@@ -15,9 +15,12 @@
 		"start": "TS_NODE_BASEURL=./dist node -r tsconfig-paths/register ./dist/index.js",
 		"start:updateAnalysis": "TS_NODE_BASEURL=./dist node -r tsconfig-paths/register ./dist/index.js --profile=updateAnalysis",
 		"start:updateCache": "TS_NODE_BASEURL=./dist node -r tsconfig-paths/register ./dist/index.js --profile=updateCache",
-		"test": "echo \"Error: no test specified\" && exit 1"
+		"test": "node -r ts-node/register --test $(find src -name '*.test.ts')"
 	},
 	"author": "",
+	"engines": {
+		"node": ">=24"
+	},
 	"license": "ISC",
 	"dependencies": {
 		"@google-cloud/storage": "^7.14.0",
@@ -36,7 +39,7 @@
 	"devDependencies": {
 		"@types/lodash": "^4.14.185",
 		"@types/minimist": "^1.2.2",
-		"@types/node": "^18.7.18",
+		"@types/node": "^24.13.2",
 		"@types/url-join": "^4.0.1",
 		"ts-node": "^10.9.1",
 		"ts-patch": "^3.2.1",

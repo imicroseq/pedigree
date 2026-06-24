@@ -1,4 +1,5 @@
 import { createReadStream } from 'fs';
+import { stat } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { parse } from 'csv';
@@ -13,19 +14,23 @@ import logger from '@/utils/logger';
 const storage = new Storage();
 
 export type TsvColumns = {
-	breadth_of_coverage_value: string; // unused
-	consensus_sequence_software_name: string; // unused
-	consensus_sequence_software_version: string; // unused
-	depth_of_coverage_value: string; // unused
 	fasta_header_name: string;
 	lineage: string;
-	pangolin_data_version: string;
-	pangolin_version: string;
-	reference_genome_accession: string; // unused
-	scorpio_call: string;
-	scorpio_version: string;
-	study_id: string;
+	// present in the full metadata TSV; absent in the lighter lineage_assignments.csv
+	breadth_of_coverage_value?: string;
+	consensus_sequence_software_name?: string;
+	consensus_sequence_software_version?: string;
+	depth_of_coverage_value?: string;
+	pangolin_data_version?: string;
+	pangolin_version?: string;
+	reference_genome_accession?: string;
+	scorpio_call?: string;
+	scorpio_version?: string;
+	study_id?: string;
 };
+
+const requiredHeaders = ['fasta_header_name', 'lineage'] as const;
+type RequiredHeader = (typeof requiredHeaders)[number];
 
 const headerAliases: Record<keyof TsvColumns, string[]> = {
 	breadth_of_coverage_value: [],
@@ -45,6 +50,69 @@ const headerAliases: Record<keyof TsvColumns, string[]> = {
 const expectedHeaders = Object.keys(headerAliases) as Array<keyof TsvColumns>;
 const expectedHeaderMap = buildExpectedHeaderMap();
 
+export type LineageFileInfo = {
+	fileName: string;
+	/** md5Hash for GCS; "<mtimeMs>:<size>" for local files. */
+	fingerprint: string;
+};
+
+export async function getLineageFileInfo(): Promise<LineageFileInfo> {
+	const localFilePath = config.gs.localFilePath;
+	if (localFilePath) {
+		const resolved = resolveLocalFilePath(localFilePath);
+		const { mtimeMs, size } = await stat(resolved);
+		return { fileName: path.basename(resolved), fingerprint: `${mtimeMs}:${size}` };
+	}
+	const fileName = await getLatestLineageFile();
+	const [metadata] = await storage.bucket(config.gs.bucket).file(fileName).getMetadata();
+	const md5Hash = (metadata as Record<string, unknown>).md5Hash as string | undefined;
+	const fingerprint =
+		md5Hash ??
+		`${(metadata as Record<string, unknown>).updated}:${(metadata as Record<string, unknown>).size}`;
+	return { fileName: path.basename(fileName), fingerprint };
+}
+
+/**
+ * Stream the lineage file (GCS or local) into a Writable. Used by the cache-fill step.
+ * Resolves file location internally so the cache module does not need to know the source type.
+ */
+export async function streamFileToCacheWriter(writer: Writable): Promise<void> {
+	const localFilePath = config.gs.localFilePath;
+	if (localFilePath) {
+		await streamLocalFile(localFilePath, writer);
+		return;
+	}
+	const fileName = await getLatestLineageFile();
+	await streamFileDownload(fileName, writer);
+}
+
+export const validateLineageFile = async (): Promise<void> => {
+	const localFilePath = config.gs.localFilePath;
+
+	let sourceStream: NodeJS.ReadableStream;
+	let delimiter: string;
+
+	if (localFilePath) {
+		const resolved = resolveLocalFilePath(localFilePath);
+		logger.info(`Preflight: validating headers in ${resolved}`);
+		sourceStream = createReadStream(resolved);
+		delimiter = delimiterFor(resolved);
+	} else {
+		const fileName = await getLatestLineageFile();
+		logger.info(`Preflight: validating headers in gs://${config.gs.bucket}/${fileName}`);
+		sourceStream = storage.bucket(config.gs.bucket).file(fileName).createReadStream();
+		delimiter = delimiterFor(fileName);
+	}
+
+	return new Promise<void>((resolve, reject) => {
+		sourceStream
+			.pipe(parse({ columns: mapAndValidateHeaders, delimiter, to: 1, trim: true }))
+			.on('data', () => {}) // drain the single validation record; we only care about headers
+			.on('end', () => { logger.info('Preflight: headers valid'); resolve(); })
+			.on('error', reject);
+	});
+};
+
 export const getLatestLineageFile = (): Promise<string> => {
 	return new Promise<string>((resolve, reject) => {
 		listFiles(config.gs.bucket, config.gs.folder)
@@ -58,7 +126,7 @@ export const getLatestLineageFile = (): Promise<string> => {
 export const streamFileDownload = (fileName: string, handleData: Writable): Promise<string> => {
 	return new Promise<string>((resolve, reject) => {
 		logger.info(`Downloading file:${fileName}`);
-		streamTsv(storage.bucket(config.gs.bucket).file(fileName).createReadStream(), handleData)
+		streamDelimited(storage.bucket(config.gs.bucket).file(fileName).createReadStream(), handleData, delimiterFor(fileName))
 			.on('finish', () => {
 				logger.info(`gs://${config.gs.bucket}/${fileName} download completed`);
 				resolve(`gs://${config.gs.bucket}/${fileName} download completed`);
@@ -74,7 +142,7 @@ export const streamLocalFile = (filePath: string, handleData: Writable): Promise
 	return new Promise<string>((resolve, reject) => {
 		const resolvedFilePath = resolveLocalFilePath(filePath);
 		logger.info(`Loading local file:${resolvedFilePath}`);
-		streamTsv(createReadStream(resolvedFilePath), handleData)
+		streamDelimited(createReadStream(resolvedFilePath), handleData, delimiterFor(resolvedFilePath))
 			.on('finish', () => {
 				logger.info(`Local file ${resolvedFilePath} load completed`);
 				resolve(`Local file ${resolvedFilePath} load completed`);
@@ -86,19 +154,21 @@ export const streamLocalFile = (filePath: string, handleData: Writable): Promise
 	});
 };
 
-const streamTsv = (sourceStream: NodeJS.ReadableStream, handleData: Writable) =>
+const delimiterFor = (filePath: string): string => (filePath.toLowerCase().endsWith('.csv') ? ',' : '\t');
+
+const streamDelimited = (sourceStream: NodeJS.ReadableStream, handleData: Writable, delimiter: string) =>
 	sourceStream
 		.pipe(
 			parse({
 				columns: (headers: string[]) => mapAndValidateHeaders(headers),
-				delimiter: '\t',
+				delimiter,
 				trim: true,
 			}),
 		)
 		.pipe(handleData);
 
-function mapAndValidateHeaders(headers: string[]): string[] {
-	const missingHeaders = new Set(expectedHeaders);
+export function mapAndValidateHeaders(headers: string[]): string[] {
+	const missingRequired = new Set<RequiredHeader>(requiredHeaders);
 	const seenHeaders = new Set<string>();
 
 	const mappedHeaders = headers.map((header) => {
@@ -110,22 +180,24 @@ function mapAndValidateHeaders(headers: string[]): string[] {
 		}
 
 		if (seenHeaders.has(mappedHeader)) {
-			throw new Error(`Duplicate TSV header detected after normalization: ${header}`);
+			throw new Error(`Duplicate header detected after normalization: ${header}`);
 		}
 
 		seenHeaders.add(mappedHeader);
-		missingHeaders.delete(mappedHeader);
+		if (requiredHeaders.includes(mappedHeader as RequiredHeader)) {
+			missingRequired.delete(mappedHeader as RequiredHeader);
+		}
 		return mappedHeader;
 	});
 
-	if (missingHeaders.size > 0) {
-		throw new Error(`Missing required TSV headers: ${Array.from(missingHeaders).join(', ')}`);
+	if (missingRequired.size > 0) {
+		throw new Error(`Missing required headers: ${Array.from(missingRequired).join(', ')}`);
 	}
 
 	return mappedHeaders;
 }
 
-function normalizeHeaderKey(value: string): string {
+export function normalizeHeaderKey(value: string): string {
 	return value.replace(/[\s_]+/g, '').toLowerCase();
 }
 

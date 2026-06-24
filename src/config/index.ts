@@ -2,9 +2,6 @@ export const config = {
 	analysis: {
 		typeName: process.env.ANALYSIS_TYPE_NAME || 'consensus_sequence',
 	},
-	cache: {
-		maxAgeMinutes: parseInt(process.env.CACHE_MAX_AGE_MINUTES || '0'),
-	},
 	ego: {
 		clientId: process.env.EGO_CLIENT_ID || '',
 		clientSecret: process.env.EGO_CLIENT_SECRET || '',
@@ -35,5 +32,6 @@ export const config = {
 	},
 	song: {
 		endpoint: process.env.SONG_ENDPOINT || '',
+		patchConcurrency: parseInt(process.env.SONG_PATCH_CONCURRENCY || '5'),
 	},
 };

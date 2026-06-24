@@ -1,5 +1,35 @@
 # Sessions
 
+## 2026-06-23
+
+Redesigned the two-phase cache/update pipeline to fix a root cause bug: `saveCacheAnalysis` had an `existsKey` write-once guard that prevented stale cache entries from being updated, causing 151 UHTC-ON analyses to be skipped when SONG's `lineage_analysis` had been cleared since the last cache fill.
+
+- `src/services/fileSource.ts`: added `LineageFileInfo` type, `getLineageFileInfo()` (computes file fingerprint: GCS `md5Hash` or local `mtime:size`), `streamFileToCacheWriter()` (replaces direct-caller streaming)
+- `src/cache/index.ts`: complete redesign; cache now stores file state (lineage fields keyed by `fasta_header_name`) instead of SONG state; freshness determined by file fingerprint against fill marker; removed `getAndCacheAnalysisByStudy`, `saveCacheAnalysis`, `adoptCacheIfNeeded`, all SONG imports
+- `src/services/index.ts`: complete redesign; `startUpdateAnalysisPipeline` now paginates all SONG studies (100 per page), looks up each analysis in Redis, PATCHes only when lineage differs; concurrent batches via `Promise.all` up to `SONG_PATCH_CONCURRENCY`
+- `src/index.ts`: UPDATECACHE runs `validateLineageFile` then `startLoadCachePipeline`; UPDATEANALYSIS runs `startUpdateAnalysisPipeline` only (no file validation needed)
+- `src/config/index.ts`, `.env.schema`: removed `CACHE_MAX_AGE_MINUTES` entirely
+- `DEVELOPMENT.md`: rewrote cache freshness and running sections; added architecture section documenting both phases, fingerprint logic, and Redis flush requirement for existing deployments
+- `.dev/tech-debt.md`: closed async-executor and per-batch-logging items; added sequential-Redis-writes item
+- `.dev/roadmap.md`: added cache redesign entry; superseded SONG-driven cache invalidation backlog item
+- `src/cache/index.ts`: added row counter to `makeRedisCacheWritable`; logs progress every 10k rows with elapsed time
+- `src/services/index.ts`: removed "No change needed" debug log; silent skip is correct behaviour
+- `CHANGELOG.md`: created; documents pre-June vs post-June architecture and rationale
+- `README.md`: updated env var table, Node version, profiles, fixed typos
+- `src/services/fileSource.ts`: exported `normalizeHeaderKey` and `mapAndValidateHeaders` for testing
+- `src/cache/index.ts`: exported `CacheFillMarker` type; extracted `isMarkerFresh(marker, fileInfo)` as pure exported function
+- `src/services/index.ts`: extracted `shouldPatch(analysis, cached)` as pure exported function
+- `src/services/fileSource.test.ts`, `src/cache/index.test.ts`, `src/services/index.test.ts`: 24 BDD tests; all passing
+- `package.json`: wired `npm test`; updated `@types/node` to `^24` to match runtime
+- `doc/sequenceDiagram.md`: rewritten to reflect new architecture; removed ViralAI participant; UPDATECACHE now shows file→Redis flow
+- `.dev/tech-debt.md`: closed "No tests"; expanded structured logging scope note
+- `Dockerfile`: Node 22 → 24
+- `README.md`, `DEVELOPMENT.md`: Node requirement updated to v24
+- `package.json`: added `engines: { node: ">=24" }`; version set to `0.0.0-dev` (Jenkins stamps real version at release)
+- `CHANGELOG.md`, `DEVELOPMENT.md`: "June 2026" replaced with `v2.0.0`; Duotang replaced with "Pangolin lineage file" except where describing file provenance
+- `DEVELOPMENT.md`: added versioning section documenting `0.0.0-dev` convention
+- `package-lock.json`: synced
+
 ## 2026-06-19
 
 First session on Pedigree in the iMicroSeq context. Read codebase, created .dev/ scaffold. Investigated the Duotang pipeline file format, queried dev and prod SONG directly, and implemented the new fileSource-based design.

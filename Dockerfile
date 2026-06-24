@@ -8,7 +8,7 @@ ARG ENABLE_LOGS=false
 # Builder
 #######################################################
 
-FROM node:22-alpine as builder
+FROM node:24-alpine as builder
 
 ARG APP_FOLDER
 ARG APP_GID
@@ -33,7 +33,7 @@ USER $APP_USER
 # App container
 #######################################################
 
-FROM node:22-slim as runtime
+FROM node:24-slim as runtime
 RUN rm /bin/sh && ln -s /bin/bash /bin/sh
 
 ARG APP_FOLDER

@@ -18,9 +18,7 @@ _(none — previous blockers resolved)_
 `song.ts` logs each successful PATCH at `info` with a running counter. For large runs (hundreds of thousands of analyses) this floods the log. Downgrade to `debug`; keep a single `info` summary at the end (already present in `index.ts` SUMMARY block).
 standalone: yes
 
-### Logging: cache-fill progress logged per 100-record batch
-`cache/index.ts` logs a percentage progress line for every page of 100 analyses within each study. For large studies (ABPL-AB has ~99k records) this is ~990 log lines per study. Reduce to per-study summary only, or log at `debug`.
-standalone: yes
+~~### Logging: cache-fill progress logged per 100-record batch~~ — resolved 2026-06-23; cache now filled by streaming the lineage file directly, no per-study pagination
 
 ~~### Logging: `isValidData` logs `!source?.lineage` instead of the value~~ — fixed 2026-06-19
 
@@ -29,17 +27,17 @@ standalone: yes
 standalone: yes
 
 ### Logging: unstructured format
-Winston is configured with a plain-text printf format. Per global conventions, structured logging (key-value pairs) is first-class, both for machine queryability and for OWASP A09 compliance. All event-significant log lines (patch success/failure, cache miss, validation failure, script start/end) should emit structured objects, not interpolated strings.
+Winston is configured with a plain-text printf format. Per global conventions, structured logging (key-value pairs) is first-class, both for machine queryability and for OWASP A09 compliance. All event-significant log lines (patch success/failure, cache miss, validation failure, cache fill progress, script start/end) should emit structured objects, not interpolated strings. Scope: all log call sites across `cache/index.ts`, `services/index.ts`, `services/song.ts`, `services/fileSource.ts`, and `index.ts`.
 standalone: yes
 
 ### Sequence diagram references ViralAI
 `doc/sequenceDiagram.md` still labels the external source "ViralAI" in all three flow variants. Should be updated to a generic label ("lineage source" or "GCS bucket") to match the new ETL-agnostic architecture.
 standalone: yes
 
-### Async-executor anti-pattern in `cache/index.ts`
-`getAndCacheAnalysisByStudy` and `saveCacheAnalysis` still use `new Promise(async (resolve, reject) => {...})`. `startLoadCachePipeline` was fixed to a plain `async function` but these two were not in scope. Both can be rewritten as plain async functions without behaviour change.
+~~### Async-executor anti-pattern in `cache/index.ts`~~ — resolved 2026-06-23; `getAndCacheAnalysisByStudy` and `saveCacheAnalysis` removed in cache redesign
+
+### Redis writes are sequential during cache fill
+`makeRedisCacheWritable` in `cache/index.ts` issues one `saveHash` call per row and awaits it before processing the next row (stream backpressure). For large files (~650k rows in production) this serialises all Redis writes. Pipelining via `multi()`/`exec()` in batches would significantly reduce fill time.
 standalone: yes
 
-### No tests
-`package.json` test script is a placeholder (`echo "Error: no test specified" && exit 1`). No unit or integration tests exist. The header validation logic in `fileSource.ts` (`mapAndValidateHeaders`, `buildExpectedHeaderMap`) and the data-validity check in `services/index.ts` (`isValidData`) are the highest-value targets for initial coverage.
-standalone: yes
+~~### No tests~~ — resolved 2026-06-23; 24 BDD tests added covering `normalizeHeaderKey`, `mapAndValidateHeaders`, `cacheKey`, `isMarkerFresh`, `shouldPatch`

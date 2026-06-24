@@ -1,95 +1,64 @@
 ```mermaid
 sequenceDiagram
-
     participant Scheduler
     participant Pedigree
-    participant Cache
+    participant LineageFile as LineageFile (GCS / local)
+    participant Cache as Cache (Redis)
     participant Song
 
-    alt
-
-        note over Pedigree: PROFILE=updateCache
-
-            Scheduler->>Pedigree: Start
-
-            Pedigree->>+Song: GET /studies/all
-            Song-->>-Pedigree: return List of StudyIDs
-            loop each StudyID
-                loop each 100 PUBLISHED analysis
-                    Pedigree->>+Song: GET /studies/{studyId}/analysis/paginated
-                    Song-->>-Pedigree: return List of Analysis
-
-                    Pedigree->>Cache: save AnalysisID, specimen_collector_sample_ID, lineage data
-                end
-            end
-
-        Pedigree-->>Scheduler: End
-
-    else
-
-        note over Pedigree: PROFILE=updateAnalysis
+    alt PROFILE=updateCache
 
         Scheduler->>Pedigree: Start
 
-            Pedigree->>+ViralAI: download .tsv from bucket
+        Pedigree->>+LineageFile: get file name and fingerprint
+        LineageFile-->>-Pedigree: fileName, fingerprint (md5Hash or mtime:size)
 
-            loop each Analysis from .tsv
-                Pedigree->>+Cache: get AnalysisID by specimen_collector_sample_ID
-                Cache-->>-Pedigree: return Analysis
+        Pedigree->>+Cache: get fill marker
+        Cache-->>-Pedigree: marker (fileName, fingerprint, filledAt) or null
 
-
-                alt IF schema version 16 & linage has changed
-
-                    Pedigree->>+Song: PATCH /studies/{studyId}/analysis/{analysisId}
-                    Song-->>-Pedigree: return API response
-
-                end
-
+        alt fingerprint matches marker
+            Pedigree->>Pedigree: skip refill — cache is current
+        else stale or no marker
+            Pedigree->>+LineageFile: stream file
+            loop each row
+                LineageFile-->>Pedigree: fasta_header_name, lineage, pangolin fields
+                Pedigree->>Cache: save lineage entry keyed by fasta_header_name
             end
-
-            ViralAI-->>-Pedigree: finish reading .tsv
+            LineageFile-->>-Pedigree: stream complete
+            Pedigree->>Cache: save fill marker (fileName, fingerprint, filledAt)
+        end
 
         Pedigree-->>Scheduler: End
 
-    else
-
-        note over Pedigree: No profile
-
-        note over Pedigree: The union of the 2 previous profiles updateCache + updateAnalysis sequentially
+    else PROFILE=updateAnalysis
 
         Scheduler->>Pedigree: Start
 
-            Pedigree->>+Song: GET /studies/all
-            Song-->>-Pedigree: return List of StudyIDs
-            loop each StudyID
-                loop each 100 PUBLISHED analysis
-                    Pedigree->>+Song: GET /studies/{studyId}/analysis/paginated
-                    Song-->>-Pedigree: return List of Analysis
+        Pedigree->>+Song: GET /studies/all
+        Song-->>-Pedigree: list of study IDs
 
-                    Pedigree->>Cache: save AnalysisID, specimen_collector_sample_ID, lineage data
+        loop each study
+            loop each page of 100 analyses
+                Pedigree->>+Song: GET /studies/{studyId}/analysis/paginated
+                Song-->>-Pedigree: list of analyses
+
+                loop each analysis (concurrent batches)
+                    Pedigree->>+Cache: get lineage by fasta_header_name
+                    Cache-->>-Pedigree: lineage entry or miss
+
+                    alt lineage entry found and differs from SONG
+                        Pedigree->>+Song: PATCH /studies/{studyId}/analysis/{analysisId}
+                        Song-->>-Pedigree: updated analysis
+                    end
                 end
             end
-
-
-            Pedigree->>+ViralAI: download .tsv from bucket
-
-            loop each Analysis from .tsv
-                Pedigree->>+Cache: get AnalysisID by specimen_collector_sample_ID
-                Cache-->>-Pedigree: return Analysis
-
-
-                alt IF schema version 16 & linage has changed
-
-                    Pedigree->>+Song: PATCH /studies/{studyId}/analysis/{analysisId}
-                    Song-->>-Pedigree: return API response
-
-                end
-
-            end
-
-            ViralAI-->>-Pedigree: finish reading .tsv
+        end
 
         Pedigree-->>Scheduler: End
+
+    else No profile
+
+        note over Pedigree: Runs updateCache then updateAnalysis sequentially (see above)
 
     end
 ```
