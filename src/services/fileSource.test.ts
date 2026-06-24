@@ -1,7 +1,25 @@
 import { suite, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeHeaderKey, mapAndValidateHeaders } from './fileSource';
+import { normalizeHeaderKey, mapAndValidateHeaders, isUrl } from './fileSource';
+
+suite('isUrl', () => {
+	test('returns true for an https URL', () => {
+		assert.equal(isUrl('https://github.com/bfjia/Duotang_LineagePipeline/raw/main/latest/lineage_assignments.csv'), true);
+	});
+
+	test('returns true for an http URL', () => {
+		assert.equal(isUrl('http://example.com/file.tsv'), true);
+	});
+
+	test('returns false for an absolute local path', () => {
+		assert.equal(isUrl('/data/lineage_assignments.csv'), false);
+	});
+
+	test('returns false for a tilde-prefixed path', () => {
+		assert.equal(isUrl('~/data/lineage_assignments.csv'), false);
+	});
+});
 
 suite('normalizeHeaderKey', () => {
 	test('lowercases all characters', () => {

@@ -30,9 +30,7 @@ standalone: yes
 Winston is configured with a plain-text printf format. Per global conventions, structured logging (key-value pairs) is first-class, both for machine queryability and for OWASP A09 compliance. All event-significant log lines (patch success/failure, cache miss, validation failure, cache fill progress, script start/end) should emit structured objects, not interpolated strings. Scope: all log call sites across `cache/index.ts`, `services/index.ts`, `services/song.ts`, `services/fileSource.ts`, and `index.ts`.
 standalone: yes
 
-### Sequence diagram references ViralAI
-`doc/sequenceDiagram.md` still labels the external source "ViralAI" in all three flow variants. Should be updated to a generic label ("lineage source" or "GCS bucket") to match the new ETL-agnostic architecture.
-standalone: yes
+~~### Sequence diagram references ViralAI~~ — resolved 2026-06-23; diagram rewritten to use "LineageFile (URL / local / GCS)" participant
 
 ~~### Async-executor anti-pattern in `cache/index.ts`~~ — resolved 2026-06-23; `getAndCacheAnalysisByStudy` and `saveCacheAnalysis` removed in cache redesign
 
@@ -41,3 +39,8 @@ standalone: yes
 standalone: yes
 
 ~~### No tests~~ — resolved 2026-06-23; 24 BDD tests added covering `normalizeHeaderKey`, `mapAndValidateHeaders`, `cacheKey`, `isMarkerFresh`, `shouldPatch`
+
+### URL source: richer fingerprinting via GitHub Contents API
+`getUrlFileInfo` currently issues an HTTP HEAD and uses `ETag` or `Last-Modified` as the fingerprint. For GitHub raw URLs, the GitHub Contents API provides both the blob `sha` (hash of file content, stable across renames) and the latest commit `sha` (useful for auditability in the fill marker). Upgrading to this would give stable, content-addressable fingerprints that survive cache warmings triggered only by reprocessing the same file. Requires parsing the raw URL to extract owner, repo, and path, then calling `GET /repos/{owner}/{repo}/contents/{path}`.
+standalone: yes
+context: Phase 2 of LINEAGE_FILE_SOURCE URL support; Phase 1 (ETag/Last-Modified) is in place as of 2026-06-24

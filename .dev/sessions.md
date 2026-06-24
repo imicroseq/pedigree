@@ -1,5 +1,17 @@
 # Sessions
 
+## 2026-06-24
+
+Added `LINEAGE_FILE_SOURCE` URL support so pedigree can fetch the Pangolin lineage file directly from GitHub (Duotang's publish location) without GCS.
+
+- `src/config/index.ts`: `localFilePath` → `fileSource`; env var `LOCAL_FILE_PATH` → `LINEAGE_FILE_SOURCE`
+- `.env.schema`: `LOCAL_FILE_PATH` → `LINEAGE_FILE_SOURCE`
+- `src/services/fileSource.ts`: added `isUrl()` (exported); added `getUrlFileInfo()` (HTTP HEAD for ETag/Last-Modified fingerprint); added `streamUrlFile()` (axios GET stream); updated `getLineageFileInfo()`, `streamFileToCacheWriter()`, `validateLineageFile()` to three-way branch: URL → local → GCS; updated `LineageFileInfo.fingerprint` JSDoc
+- `src/services/fileSource.test.ts`: added `isUrl` suite (4 tests); total test count now 28
+- `README.md`: updated description and env var table; `LOCAL_FILE_PATH` → `LINEAGE_FILE_SOURCE` with URL description
+- `DEVELOPMENT.md`: updated dev config table; updated Phase 1 fingerprint description; rewrote "Lineage file sources" section to document all three sources; updated platform pipeline description
+- `.dev/tech-debt.md`: added Phase 2 item (GitHub Contents API blob sha + commit sha fingerprinting); closed stale sequence-diagram ViralAI item
+
 ## 2026-06-23
 
 Redesigned the two-phase cache/update pipeline to fix a root cause bug: `saveCacheAnalysis` had an `existsKey` write-once guard that prevented stale cache entries from being updated, causing 151 UHTC-ON analyses to be skipped when SONG's `lineage_analysis` had been cleared since the last cache fill.

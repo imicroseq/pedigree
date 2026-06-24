@@ -1,6 +1,6 @@
 # Pedigree
 
-Synchronizes Pangolin lineage data from a lineage file (GCS or local) into the VirusSeq SONG repository.
+Synchronizes Pangolin lineage data from a lineage file (URL, local, or GCS) into the VirusSeq SONG repository.
 
 ## How it works
 
@@ -38,7 +38,7 @@ For development details, local Redis setup, and troubleshooting: see [DEVELOPMEN
 | `GS_FOLDER` | String | GCS folder path within the bucket (production). |
 | `JWT_KEY` | String | Public key for JWT verification. Optional if `JWT_KEY_URL` is set. |
 | `JWT_KEY_URL` | String | URL to fetch the public key. Optional if `JWT_KEY` is set. |
-| `LOCAL_FILE_PATH` | String | Optional. Path to a local lineage file. When set, bypasses GCS entirely. |
+| `LINEAGE_FILE_SOURCE` | String | Optional. URL (`https://...`) or local path to the lineage file. When set, bypasses GCS entirely. |
 | `NODE_ENV` | String | Optional. Runtime environment identifier. |
 | `NOTIFICATIONS_SLACK_URL` | String | Webhook URL for Slack run notifications. |
 | `REDIS_HOST` | String | Default `localhost`. Comma-separated hosts enable cluster mode (e.g. `host1:6379,host2:6379`). |

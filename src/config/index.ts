@@ -10,7 +10,7 @@ export const config = {
 	gs: {
 		bucket: process.env.GS_BUCKET_NAME || '',
 		folder: process.env.GS_FOLDER || '',
-		localFilePath: process.env.LOCAL_FILE_PATH || '',
+		fileSource: process.env.LINEAGE_FILE_SOURCE || '',
 	},
 	jwt: {
 		key: process.env.JWT_KEY || '',

@@ -29,7 +29,7 @@ Key variables for local development:
 | `EGO_CLIENT_ID` / `EGO_CLIENT_SECRET` | see team vault | |
 | `REDIS_HOST` | `localhost` | No `http://` prefix |
 | `REDIS_PORT` | `60318` | Must match your port-forward |
-| `LOCAL_FILE_PATH` | `~/Downloads/virusseq_metadata.tsv` | Bypasses GCS; use for local testing |
+| `LINEAGE_FILE_SOURCE` | `~/Downloads/virusseq_metadata.tsv` | Local path or URL; bypasses GCS. Use a local file or direct URL for local testing |
 | `SONG_PATCH_CONCURRENCY` | `5` | Concurrent PATCH requests during UPDATEANALYSIS |
 
 Install dependencies:
@@ -78,7 +78,7 @@ Pedigree runs in two phases, either separately (via profiles) or together (defau
 ### Phase 1: UPDATECACHE — file to Redis
 
 1. Validates the lineage file (checks required columns are present).
-2. Computes a fingerprint for the file: `md5Hash` from GCS metadata, or `<mtimeMs>:<size>` for local files.
+2. Computes a fingerprint for the file: `ETag` or `Last-Modified` for URLs, `<mtimeMs>:<size>` for local files, `md5Hash` from GCS metadata (with `updated:size` fallback).
 3. Compares the fingerprint against the fill marker stored in Redis. If they match, the cache is current and the fill is skipped.
 4. If stale or absent, streams every row of the lineage file into Redis. Each row is keyed by `fasta_header_name` (lowercased) and stores the five lineage fields: `lineage`, `pangolinVersion`, `pangolinDataVersion`, `scorpioCall`, `scorpioVersion`.
 5. Writes a fill marker (`pedigree:cache:fill`) with the file name, fingerprint, and fill timestamp.
@@ -113,13 +113,20 @@ After flushing, run UPDATECACHE before UPDATEANALYSIS.
 
 ## Lineage file sources
 
-Pedigree supports two lineage file sources, controlled by environment variables:
+Pedigree supports three lineage file sources, controlled by `LINEAGE_FILE_SOURCE` and the GCS variables:
 
-**Local file (for testing):**
-Set `LOCAL_FILE_PATH` to a local `.tsv` or `.csv` file. Bypasses GCS entirely. Fingerprint is computed from the file's `mtime` and `size` — no MD5 calculation needed.
+**URL (primary for production):**
+Set `LINEAGE_FILE_SOURCE` to an `https://` or `http://` URL. Pedigree issues a HEAD request to obtain the `ETag` or `Last-Modified` header as the fingerprint, then streams the file via HTTP GET. Example:
 
-**GCS (production):**
-Set `GS_BUCKET_NAME` and `GS_FOLDER`. Unset or empty `LOCAL_FILE_PATH`. The script fetches the latest file from the bucket. Fingerprint is taken from GCS object metadata (`md5Hash`), with a fallback to `updated:size` if `md5Hash` is absent.
+```
+LINEAGE_FILE_SOURCE=https://github.com/bfjia/Duotang_LineagePipeline/raw/main/latest/lineage_assignments.csv
+```
+
+**Local file (development and testing):**
+Set `LINEAGE_FILE_SOURCE` to a local path (absolute or `~/...`). Fingerprint is computed from the file's `mtime` and `size`. Bypasses GCS and network access entirely.
+
+**GCS (legacy production):**
+Leave `LINEAGE_FILE_SOURCE` unset. Set `GS_BUCKET_NAME` and `GS_FOLDER`. The script fetches the newest file from the bucket. Fingerprint is taken from GCS object metadata (`md5Hash`), with a fallback to `updated:size` if `md5Hash` is absent.
 
 The Duotang pipeline produces two Pangolin lineage file formats:
 - `virusseq_metadata.tsv` — tab-separated, full metadata, column `fasta header name`
@@ -159,7 +166,7 @@ npm run reset               # clear both and reinstall
 
 Pedigree sits at the beginning of a multi-stage pipeline. When it runs successfully, data flows as follows:
 
-1. **Pedigree** reads a lineage file from GCS (or `LOCAL_FILE_PATH`), fills Redis, then scans SONG and PATCHes analyses whose lineage fields are missing or outdated.
+1. **Pedigree** reads a lineage file from a URL, local path, or GCS (set by `LINEAGE_FILE_SOURCE`), fills Redis, then scans SONG and PATCHes analyses whose lineage fields are missing or outdated.
 2. **SONG** persists the updated analysis and emits an event downstream. Indexing is triggered automatically - no manual intervention is required.
 3. **Elasticsearch** receives the upserted document in the `clinical_centric` index.
 4. **Arranger** serves the indexed data to the portal via GraphQL.

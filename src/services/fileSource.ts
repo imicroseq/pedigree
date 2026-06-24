@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import { parse } from 'csv';
 import { Writable } from 'stream';
+import axios from 'axios';
 import { GetFilesResponse, Storage } from '@google-cloud/storage';
 
 import { config } from '@/config';
@@ -52,14 +53,21 @@ const expectedHeaderMap = buildExpectedHeaderMap();
 
 export type LineageFileInfo = {
 	fileName: string;
-	/** md5Hash for GCS; "<mtimeMs>:<size>" for local files. */
+	/** md5Hash for GCS; "<mtimeMs>:<size>" for local files; ETag or Last-Modified for URLs. */
 	fingerprint: string;
 };
 
+export function isUrl(value: string): boolean {
+	return value.startsWith('http://') || value.startsWith('https://');
+}
+
 export async function getLineageFileInfo(): Promise<LineageFileInfo> {
-	const localFilePath = config.gs.localFilePath;
-	if (localFilePath) {
-		const resolved = resolveLocalFilePath(localFilePath);
+	const fileSource = config.gs.fileSource;
+	if (isUrl(fileSource)) {
+		return getUrlFileInfo(fileSource);
+	}
+	if (fileSource) {
+		const resolved = resolveLocalFilePath(fileSource);
 		const { mtimeMs, size } = await stat(resolved);
 		return { fileName: path.basename(resolved), fingerprint: `${mtimeMs}:${size}` };
 	}
@@ -72,14 +80,27 @@ export async function getLineageFileInfo(): Promise<LineageFileInfo> {
 	return { fileName: path.basename(fileName), fingerprint };
 }
 
+async function getUrlFileInfo(url: string): Promise<LineageFileInfo> {
+	const response = await axios.head(url, { timeout: 10_000 });
+	const etag = response.headers['etag'] as string | undefined;
+	const lastModified = response.headers['last-modified'] as string | undefined;
+	const fingerprint = etag ?? lastModified ?? `url:${url}`;
+	const fileName = path.basename(new URL(url).pathname) || 'lineage-file';
+	return { fileName, fingerprint };
+}
+
 /**
- * Stream the lineage file (GCS or local) into a Writable. Used by the cache-fill step.
+ * Stream the lineage file (URL, local, or GCS) into a Writable. Used by the cache-fill step.
  * Resolves file location internally so the cache module does not need to know the source type.
  */
 export async function streamFileToCacheWriter(writer: Writable): Promise<void> {
-	const localFilePath = config.gs.localFilePath;
-	if (localFilePath) {
-		await streamLocalFile(localFilePath, writer);
+	const fileSource = config.gs.fileSource;
+	if (isUrl(fileSource)) {
+		await streamUrlFile(fileSource, writer);
+		return;
+	}
+	if (fileSource) {
+		await streamLocalFile(fileSource, writer);
 		return;
 	}
 	const fileName = await getLatestLineageFile();
@@ -87,13 +108,18 @@ export async function streamFileToCacheWriter(writer: Writable): Promise<void> {
 }
 
 export const validateLineageFile = async (): Promise<void> => {
-	const localFilePath = config.gs.localFilePath;
+	const fileSource = config.gs.fileSource;
 
 	let sourceStream: NodeJS.ReadableStream;
 	let delimiter: string;
 
-	if (localFilePath) {
-		const resolved = resolveLocalFilePath(localFilePath);
+	if (isUrl(fileSource)) {
+		logger.info(`Preflight: validating headers in ${fileSource}`);
+		const response = await axios.get(fileSource, { responseType: 'stream', timeout: 10_000 });
+		sourceStream = response.data;
+		delimiter = delimiterFor(new URL(fileSource).pathname);
+	} else if (fileSource) {
+		const resolved = resolveLocalFilePath(fileSource);
 		logger.info(`Preflight: validating headers in ${resolved}`);
 		sourceStream = createReadStream(resolved);
 		delimiter = delimiterFor(resolved);
@@ -150,6 +176,22 @@ export const streamLocalFile = (filePath: string, handleData: Writable): Promise
 			.on('error', (err) => {
 				logger.error(`Local file ${resolvedFilePath} load failed: ${err}`);
 				reject(new Error(`Local file ${resolvedFilePath} load failed: ${err}`));
+			});
+	});
+};
+
+export const streamUrlFile = async (url: string, handleData: Writable): Promise<string> => {
+	logger.info(`Downloading URL: ${url}`);
+	const response = await axios.get(url, { responseType: 'stream', timeout: 60_000 });
+	return new Promise<string>((resolve, reject) => {
+		streamDelimited(response.data, handleData, delimiterFor(new URL(url).pathname))
+			.on('finish', () => {
+				logger.info(`URL ${url} download completed`);
+				resolve(`URL ${url} download completed`);
+			})
+			.on('error', (err) => {
+				logger.error(`URL ${url} download failed: ${err}`);
+				reject(new Error(`URL ${url} download failed: ${err}`));
 			});
 	});
 };
