@@ -35,6 +35,7 @@ USER $APP_USER
 
 FROM node:24-slim as runtime
 RUN rm /bin/sh && ln -s /bin/bash /bin/sh
+RUN apt-get update && apt-get install -y --no-install-recommends xz-utils && rm -rf /var/lib/apt/lists/*
 
 ARG APP_FOLDER
 ARG APP_USER

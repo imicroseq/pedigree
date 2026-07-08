@@ -1,5 +1,6 @@
 import { createReadStream } from 'fs';
 import { stat } from 'fs/promises';
+import { spawn } from 'child_process';
 import os from 'os';
 import path from 'path';
 import { parse } from 'csv';
@@ -116,8 +117,9 @@ export const validateLineageFile = async (): Promise<void> => {
 	if (isUrl(fileSource)) {
 		logger.info(`Preflight: validating headers in ${fileSource}`);
 		const response = await axios.get(fileSource, { responseType: 'stream', timeout: 10_000 });
-		sourceStream = response.data;
-		delimiter = delimiterFor(new URL(fileSource).pathname);
+		const pathname = new URL(fileSource).pathname;
+		sourceStream = pathname.toLowerCase().endsWith('.xz') ? decompressXz(response.data) : response.data;
+		delimiter = delimiterFor(pathname);
 	} else if (fileSource) {
 		const resolved = resolveLocalFilePath(fileSource);
 		logger.info(`Preflight: validating headers in ${resolved}`);
@@ -183,8 +185,10 @@ export const streamLocalFile = (filePath: string, handleData: Writable): Promise
 export const streamUrlFile = async (url: string, handleData: Writable): Promise<string> => {
 	logger.info(`Downloading URL: ${url}`);
 	const response = await axios.get(url, { responseType: 'stream', timeout: 60_000 });
+	const pathname = new URL(url).pathname;
+	const sourceStream = pathname.toLowerCase().endsWith('.xz') ? decompressXz(response.data) : response.data;
 	return new Promise<string>((resolve, reject) => {
-		streamDelimited(response.data, handleData, delimiterFor(new URL(url).pathname))
+		streamDelimited(sourceStream, handleData, delimiterFor(pathname))
 			.on('finish', () => {
 				logger.info(`URL ${url} download completed`);
 				resolve(`URL ${url} download completed`);
@@ -196,7 +200,17 @@ export const streamUrlFile = async (url: string, handleData: Writable): Promise<
 	});
 };
 
-const delimiterFor = (filePath: string): string => (filePath.toLowerCase().endsWith('.csv') ? ',' : '\t');
+const delimiterFor = (filePath: string): string => {
+	const base = filePath.toLowerCase().replace(/\.xz$/, '');
+	return base.endsWith('.csv') ? ',' : '\t';
+};
+
+function decompressXz(source: NodeJS.ReadableStream): NodeJS.ReadableStream {
+	const xz = spawn('xz', ['--decompress', '--stdout']);
+	source.pipe(xz.stdin);
+	xz.stderr.on('data', (chunk: Buffer) => logger.warn(`xz stderr: ${chunk.toString().trim()}`));
+	return xz.stdout;
+}
 
 const streamDelimited = (sourceStream: NodeJS.ReadableStream, handleData: Writable, delimiter: string) =>
 	sourceStream

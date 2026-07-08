@@ -48,7 +48,7 @@ export const sendSlackNotification = async ({
         logger.debug('Slack notification sent successfully.');
       })
       .catch((err) => {
-        logger.error(`Error sending slack notification: ${err}.`);
+        logger.warn(`Error sending slack notification: ${err}.`);
       });
   }
 };
